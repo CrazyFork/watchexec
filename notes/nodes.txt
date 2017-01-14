@@ -1,0 +1,25 @@
+* `ref`:
+    ref 获取变量的引用, 这么做的方式貌似是match的时候，如果你不用 ref borrow 指针的话
+    value 会被 assign 到你 match case 的变量上，从而影响生命周期和不必要的克隆操作。
+
+* the `!cfg` macro:
+    see https://doc.rust-lang.org/book/conditional-compilation.html
+
+* the `if let` pattern:
+    https://doc.rust-lang.org/book/if-let.html
+
+    if let Some(ref path) = e.path { // if e.path match Some, then execute if block.
+        if ignored(&path) {
+            continue;
+        }
+    } 
+
+
+* rust logger, env_logger:
+    https://doc.rust-lang.org/log/env_logger/
+
+Makefile:
+    这个文件需要重点关注下
+
+    
+    
