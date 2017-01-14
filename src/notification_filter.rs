@@ -1,104 +1,64 @@
 extern crate glob;
 
-use gitignore;
 use std::io;
-use std::path::{Path,PathBuf};
+use std::path::Path;
 
-use self::glob::{Pattern,PatternError};
+use globset;
+use globset::{Glob, GlobSet, GlobSetBuilder};
+
+use gitignore;
 
 pub struct NotificationFilter {
-    cwd: PathBuf,
-    filters: Vec<Pattern>,
-    ignores: Vec<Pattern>,
-    ignore_file: Option<gitignore::PatternSet>
+    filters: GlobSet,
+    filter_count: usize,
+    ignores: GlobSet,
+    ignore_file: Option<gitignore::PatternSet>,
 }
 
 #[derive(Debug)]
-pub enum NotificationError {
-    BadPattern(PatternError),
-    Io(io::Error)
+pub enum Error {
+    Glob(globset::Error),
+    Io(io::Error),
 }
 
 impl NotificationFilter {
-    pub fn new(current_dir: &Path, ignore_file: Option<gitignore::PatternSet>) -> Result<NotificationFilter, io::Error> {
-        let canonicalized = try!(current_dir.canonicalize());
+    pub fn new(filters: Vec<String>,
+               ignores: Vec<String>,
+               ignore_file: Option<gitignore::PatternSet>)
+               -> Result<NotificationFilter, Error> {
+        let mut filter_set_builder = GlobSetBuilder::new();
+        for f in &filters {
+            filter_set_builder.add(try!(Glob::new(f)));
+
+            debug!("Adding filter: \"{}\"", f);
+        }
+
+        let mut ignore_set_builder = GlobSetBuilder::new();
+        for i in &ignores {
+            ignore_set_builder.add(try!(Glob::new(i)));
+
+            debug!("Adding ignore: \"{}\"", i);
+        }
+
+        let filter_set = try!(filter_set_builder.build());
+        let ignore_set = try!(ignore_set_builder.build());
 
         Ok(NotificationFilter {
-            cwd: canonicalized,
-            filters: vec![],
-            ignores: vec![],
-            ignore_file: ignore_file
+            filters: filter_set,
+            filter_count: filters.len(),
+            ignores: ignore_set,
+            ignore_file: ignore_file,
         })
     }
 
-    pub fn add_extension(&mut self, extensions: &str) -> Result<(), NotificationError> {
-        let patterns: Vec<String> = extensions
-            .split(",")
-            .filter(|ext| !ext.is_empty())
-            .map(|ext| format!("*.{}", ext.replace(".", "")))
-            .collect();
-
-        for pattern in patterns {
-            try!(self.add_filter(&pattern));
-        }
-
-        Ok(())
-    }
-
-    pub fn add_filter(&mut self, pattern: &str) -> Result<(), NotificationError> {
-        let compiled = try!(self.pattern_for(pattern));
-        self.filters.push(compiled);
-
-        debug!("Adding filter: {}", pattern);
-
-        Ok(())
-    }
-
-    pub fn add_ignore(&mut self, pattern: &str) -> Result<(), NotificationError> {
-        let compiled = try!(self.pattern_for(pattern));
-        self.ignores.push(compiled);
-
-        debug!("Adding ignore: {}", pattern);
-
-        Ok(())
-    }
-
-    fn pattern_for(&self, p: &str) -> Result<Pattern, PatternError> {
-        let mut path = PathBuf::from(p);
-        if path.is_relative() {
-            path = self.cwd.join(path.as_path());
-        }
-
-        if let Ok(metadata) = path.metadata() {
-            if metadata.is_dir() {
-                path = path.join("*");
-            }
-        }
-
-        Pattern::new(path.to_str().unwrap())
-    }
-
     pub fn is_excluded(&self, path: &Path) -> bool {
-        let path_as_str = path.to_str().unwrap();
-
-        if let Ok(metadata) = path.metadata() {
-            if metadata.is_dir() {
-                debug!("Ignoring {:?}: is a directory", path);
-                return true;
-            }
+        if self.ignores.is_match(path) {
+            debug!("Ignoring {:?}: matched ignore filter", path);
+            return true;
         }
 
-        for pattern in &self.ignores {
-            if pattern.matches(path_as_str) {
-                debug!("Ignoring {:?}: matched ignore filter", path);
-                return true;
-            }
-        }
-
-        for pattern in &self.filters {
-            if pattern.matches(path_as_str) {
-                return false;
-            }
+        if self.filters.is_match(path) {
+            return false;
         }
 
         if let Some(ref ignore_file) = self.ignore_file {
@@ -108,22 +68,65 @@ impl NotificationFilter {
             }
         }
 
-        if self.filters.len() > 0 {
+        if self.filter_count > 0 {
             debug!("Ignoring {:?}: did not match any given filters", path);
         }
 
-        self.filters.len() > 0
+        self.filter_count > 0
     }
 }
 
-impl From<io::Error> for NotificationError {
-    fn from(err: io::Error) -> NotificationError {
-        NotificationError::Io(err)
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
-impl From<PatternError> for NotificationError {
-    fn from(err: PatternError) -> NotificationError {
-        NotificationError::BadPattern(err)
+impl From<globset::Error> for Error {
+    fn from(err: globset::Error) -> Error {
+        Error::Glob(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NotificationFilter;
+    use std::path::Path;
+
+    #[test]
+    fn test_allows_everything_by_default() {
+        let filter = NotificationFilter::new(vec![], vec![], None).unwrap();
+
+        assert!(!filter.is_excluded(&Path::new("foo")));
+    }
+
+    #[test]
+    fn test_multiple_filters() {
+        let filters = vec![String::from("*.rs"), String::from("*.toml")];
+        let filter = NotificationFilter::new(filters, vec![], None).unwrap();
+
+        assert!(!filter.is_excluded(&Path::new("hello.rs")));
+        assert!(!filter.is_excluded(&Path::new("Cargo.toml")));
+        assert!(filter.is_excluded(&Path::new("README.md")));
+    }
+
+    #[test]
+    fn test_multiple_ignores() {
+        let ignores = vec![String::from("*.rs"), String::from("*.toml")];
+        let filter = NotificationFilter::new(vec![], ignores, None).unwrap();
+
+        assert!(filter.is_excluded(&Path::new("hello.rs")));
+        assert!(filter.is_excluded(&Path::new("Cargo.toml")));
+        assert!(!filter.is_excluded(&Path::new("README.md")));
+    }
+
+    #[test]
+    fn test_ignores_take_precedence() {
+        let ignores = vec![String::from("*.rs"), String::from("*.toml")];
+        let filter = NotificationFilter::new(ignores.clone(), ignores, None).unwrap();
+
+        assert!(filter.is_excluded(&Path::new("hello.rs")));
+        assert!(filter.is_excluded(&Path::new("Cargo.toml")));
+        assert!(filter.is_excluded(&Path::new("README.md")));
     }
 }

@@ -1,5 +1,7 @@
 VER=$(shell grep version Cargo.toml | head -n1 | grep -Eow '".+"' | sed 's/"//g')
 
+.PHONY: doc test
+
 debug:	src/* Cargo.toml
 		@cargo build
 
@@ -8,6 +10,12 @@ release: src/* Cargo.toml
 
 clean:
 		@cargo clean
+
+test:
+		@cargo test
+
+doc: doc/watchexec.1.ronn
+		@ronn doc/watchexec.1.ronn
 
 install: release
 		@cp target/release/watchexec /usr/bin
